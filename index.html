@@ -1,0 +1,307 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ChatGPT Session Organizer</title>
+    <style>
+        body {
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+            margin: 0; padding: 0;
+            background-color: #f7f7f7; color: #333;
+            display: flex; flex-direction: column;
+            height: 100vh;
+        }
+        header {
+            background-color: #10a37f; color: white;
+            padding: 1rem 2rem; box-shadow: 0 2px 5px rgba(0,0,0,0.1);
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        header h1 { margin: 0; font-size: 1.5rem; }
+        .controls { display: flex; gap: 1rem; }
+        button, label {
+            background-color: #fff; color: #10a37f;
+            border: 1px solid #10a37f; padding: 0.5rem 1rem;
+            border-radius: 5px; cursor: pointer; font-weight: bold;
+            transition: all 0.2s ease;
+        }
+        button:hover, label:hover { background-color: #10a37f; color: white; }
+        input[type="file"] { display: none; }
+        #reset-btn { background-color: #dc3545; color: white; border-color: #dc3545;}
+        #reset-btn:hover { background-color: #c82333; }
+
+        main { display: flex; flex-grow: 1; overflow: hidden; }
+        #folder-panel {
+            width: 280px; background-color: #e9e9e9; padding: 1rem;
+            display: flex; flex-direction: column;
+            overflow-y: auto; border-right: 1px solid #ccc;
+        }
+        #folder-panel h2 { margin-top: 0; }
+        #folder-list { list-style: none; padding: 0; margin: 0; }
+        #folder-list li {
+            padding: 0.75rem; cursor: pointer; border-radius: 5px;
+            margin-bottom: 5px; border: 1px solid transparent;
+            display: flex; justify-content: space-between; align-items: center;
+        }
+        #folder-list li:hover { background-color: #dcdcdc; }
+        #folder-list li.active-folder { background-color: #10a37f; color: white; font-weight: bold; }
+        .delete-folder { font-size: 1.2rem; line-height: 1; padding: 2px 6px; border-radius: 50%; }
+        .delete-folder:hover { background-color: rgba(255,255,255,0.3); }
+
+        #session-panel { flex-grow: 1; padding: 1rem; overflow-y: auto; display: flex; flex-direction: column; }
+        #session-header { display: flex; justify-content: space-between; align-items: center; padding-bottom: 1rem; border-bottom: 1px solid #ccc; margin-bottom: 1rem; }
+        #session-header h2 { margin: 0; }
+        #session-list { list-style: none; padding: 0; margin: 0; }
+        #session-list li {
+            padding: 0.75rem; border: 1px solid #ddd; background-color: #fff;
+            border-radius: 5px; margin-bottom: 8px; cursor: pointer;
+            user-select: none; white-space: normal; word-break: break-word;
+        }
+        #session-list li.selected { background-color: #d1ecf1; border-color: #0c5460; }
+    </style>
+</head>
+<body>
+
+    <header>
+        <h1>ChatGPT Session Organizer</h1>
+        <div class="controls">
+            <label for="json-file-input">Load conversations.json</label>
+            <input type="file" id="json-file-input" accept=".json">
+            <button id="create-folder-btn">Create New Folder</button>
+            <button id="reset-btn">Clear All Folders</button>
+        </div>
+    </header>
+
+    <main>
+        <div id="folder-panel">
+            <h2>Folders</h2>
+            <ul id="folder-list"></ul>
+        </div>
+        <div id="session-panel">
+            <div id="session-header">
+                <h2 id="current-folder-title">Load your conversations.json file to begin</h2>
+                <button id="move-btn" style="display: none;">Move Selected Here</button>
+            </div>
+            <ul id="session-list"></ul>
+        </div>
+    </main>
+
+    <script>
+        const fileInput = document.getElementById('json-file-input');
+        const createFolderBtn = document.getElementById('create-folder-btn');
+        const resetBtn = document.getElementById('reset-btn');
+        const moveBtn = document.getElementById('move-btn');
+        const folderList = document.getElementById('folder-list');
+        const sessionList = document.getElementById('session-list');
+        const currentFolderTitle = document.getElementById('current-folder-title');
+
+        let allSessions = {};
+        let folderState = {};
+        let activeFolder = "Uncategorized";
+        let lastSelectedSessionId = null;
+        const STORAGE_KEY = 'chatGPTFolderState';
+
+        // --- Initial Load ---
+        document.addEventListener('DOMContentLoaded', () => {
+            loadStateFromStorage();
+            renderAll();
+        });
+
+        // --- Event Listeners ---
+        fileInput.addEventListener('change', handleFileLoad);
+        createFolderBtn.addEventListener('click', createNewFolder);
+        resetBtn.addEventListener('click', resetOrganization);
+        moveBtn.addEventListener('click', moveSelectedSessions);
+        folderList.addEventListener('click', handleFolderClick);
+        sessionList.addEventListener('click', handleSessionClick);
+
+        // --- State Management ---
+        function saveStateToStorage() {
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(folderState));
+        }
+
+        function loadStateFromStorage() {
+            const savedState = localStorage.getItem(STORAGE_KEY);
+            folderState = savedState ? JSON.parse(savedState) : { "Uncategorized": [] };
+            activeFolder = Object.keys(folderState)[0] || "Uncategorized";
+        }
+        
+        function resetOrganization() {
+            if (confirm("Are you sure you want to delete all your folders and start over? This cannot be undone.")) {
+                folderState = { "Uncategorized": Object.keys(allSessions) };
+                activeFolder = "Uncategorized";
+                saveStateToStorage();
+                renderAll();
+            }
+        }
+        
+        // --- Core Functions ---
+        function handleFileLoad(event) {
+            const file = event.target.files[0];
+            if (!file) return;
+            const reader = new FileReader();
+            reader.onload = (e) => {
+                const conversations = JSON.parse(e.target.result);
+                allSessions = {};
+                conversations.forEach(convo => {
+                    if (convo.title) {
+                        allSessions[convo.id] = { title: convo.title, create_time: convo.create_time };
+                    }
+                });
+                
+                // Re-sync with stored folders
+                const organizedIds = new Set(Object.values(folderState).flat());
+                const uncategorized = folderState["Uncategorized"] || [];
+                
+                Object.keys(allSessions).forEach(id => {
+                    if (!organizedIds.has(id)) {
+                        uncategorized.push(id);
+                    }
+                });
+                folderState["Uncategorized"] = [...new Set(uncategorized)]; // remove duplicates
+
+                saveStateToStorage();
+                renderAll();
+            };
+            reader.readAsText(file);
+        }
+        
+        function renderAll() {
+            renderFolders();
+            renderSessions();
+        }
+
+        function renderFolders() {
+            folderList.innerHTML = '';
+            Object.keys(folderState).sort().forEach(folderName => {
+                const li = document.createElement('li');
+                li.dataset.folderName = folderName;
+                if (folderName === activeFolder) li.classList.add('active-folder');
+
+                const nameSpan = document.createElement('span');
+                nameSpan.textContent = `${folderName} (${folderState[folderName].length})`;
+                li.appendChild(nameSpan);
+
+                if (folderName !== "Uncategorized") {
+                    const deleteBtn = document.createElement('span');
+                    deleteBtn.textContent = '×';
+                    deleteBtn.className = 'delete-folder';
+                    deleteBtn.title = `Delete folder "${folderName}"`;
+                    deleteBtn.dataset.deleteFolder = folderName;
+                    li.appendChild(deleteBtn);
+                }
+                folderList.appendChild(li);
+            });
+        }
+        
+        function renderSessions() {
+            sessionList.innerHTML = '';
+            moveBtn.style.display = 'none';
+
+            if (Object.keys(allSessions).length === 0){
+                currentFolderTitle.textContent = "Load your conversations.json to begin";
+                return;
+            }
+            
+            currentFolderTitle.textContent = activeFolder;
+
+            if (!folderState[activeFolder]) return;
+            
+            const sessionsInFolder = folderState[activeFolder]
+                .map(id => ({ id, ...allSessions[id] }))
+                .filter(s => s.title) // Ensure session data is loaded
+                .sort((a, b) => b.create_time - a.create_time);
+
+            sessionsInFolder.forEach(session => {
+                const li = document.createElement('li');
+                li.textContent = session.title;
+                li.dataset.sessionId = session.id;
+                sessionList.appendChild(li);
+            });
+        }
+        
+        function createNewFolder() {
+            const folderName = prompt("Enter new folder name:");
+            if (folderName && !folderState[folderName]) {
+                folderState[folderName] = [];
+                saveStateToStorage();
+                renderFolders();
+            } else if (folderState[folderName]) {
+                alert("A folder with this name already exists.");
+            }
+        }
+        
+        function handleFolderClick(event) {
+            const folderName = event.target.closest('li')?.dataset.folderName;
+            const deleteName = event.target.dataset.deleteFolder;
+
+            if (deleteName) {
+                if (confirm(`Are you sure you want to delete the "${deleteName}" folder? All sessions within it will be moved to Uncategorized.`)) {
+                    const sessionsToMove = folderState[deleteName];
+                    folderState["Uncategorized"].unshift(...sessionsToMove);
+                    delete folderState[deleteName];
+                    if (activeFolder === deleteName) {
+                        activeFolder = "Uncategorized";
+                    }
+                    saveStateToStorage();
+                    renderAll();
+                }
+            } else if (folderName) {
+                activeFolder = folderName;
+                lastSelectedSessionId = null;
+                renderFolders();
+                renderSessions();
+            }
+        }
+
+        function handleSessionClick(event) {
+            const li = event.target.closest('li');
+            if (!li) return;
+            const sessionId = li.dataset.sessionId;
+            
+            if (event.shiftKey && lastSelectedSessionId) {
+                const allLi = [...sessionList.children];
+                const lastIndex = allLi.findIndex(el => el.dataset.sessionId === lastSelectedSessionId);
+                const currentIndex = allLi.findIndex(el => el.dataset.sessionId === sessionId);
+                const [start, end] = [Math.min(lastIndex, currentIndex), Math.max(lastIndex, currentIndex)];
+                
+                allLi.forEach((el, index) => {
+                    if (index >= start && index <= end) el.classList.add('selected');
+                });
+            } else if (event.ctrlKey) {
+                li.classList.toggle('selected');
+            } else {
+                document.querySelectorAll('#session-list li.selected').forEach(el => el.classList.remove('selected'));
+                li.classList.add('selected');
+            }
+
+            lastSelectedSessionId = li.classList.contains('selected') ? sessionId : null;
+            updateMoveButton();
+        }
+
+        function updateMoveButton() {
+            const selectedCount = document.querySelectorAll('#session-list li.selected').length;
+            if (selectedCount > 0) {
+                moveBtn.style.display = 'block';
+                moveBtn.textContent = `Move ${selectedCount} Session(s) to ${activeFolder}`;
+            } else {
+                moveBtn.style.display = 'none';
+            }
+        }
+        
+        function moveSelectedSessions() {
+            const selectedSessionIds = [...document.querySelectorAll('#session-list li.selected')].map(li => li.dataset.sessionId);
+            if (selectedSessionIds.length === 0) return;
+
+            Object.keys(folderState).forEach(folder => {
+                folderState[folder] = folderState[folder].filter(id => !selectedSessionIds.includes(id));
+            });
+
+            folderState[activeFolder] = [...new Set([...folderState[activeFolder], ...selectedSessionIds])];
+            
+            saveStateToStorage();
+            renderAll();
+        }
+    </script>
+</body>
+</html>
